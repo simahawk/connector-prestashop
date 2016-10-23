@@ -38,5 +38,11 @@
         sequence="40"
         action="action_prestashop_carrier"/>
 
+    <menuitem id="menu_prestashop_manufacturer"
+        name="Manufacturers"
+        parent="menu_prestashop_root"
+        sequence="50"
+        action="action_prestashop_manufacturer"/>
+
     </data>
 </openerp>

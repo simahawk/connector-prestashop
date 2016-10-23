@@ -17,6 +17,7 @@ to Odoo:
 * Websites
 * Stores and languages
 * Carriers
+* Manufacturers (In products only in binding)
 * Product categories
 * Products
 * Combinations of products
