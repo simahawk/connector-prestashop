@@ -35,7 +35,7 @@ def backend_to_m2o(field, binding=None):
     :param binding: name of the binding model is the relation is not a binding
     """
     def modifier(self, record, to_attr):
-        if not record[field]:
+        if not record[field] or not int(record[field]):
             return False
         column = self.model._fields[to_attr]
         if column.type != 'many2one':
