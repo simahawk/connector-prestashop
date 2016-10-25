@@ -54,7 +54,6 @@ class TemplateMapper(ImportMapper):
         ('reference', 'reference'),
         ('available_for_order', 'available_for_order'),
         ('on_sale', 'on_sale'),
-        (backend_to_m2o('id_manufacturer'), 'prestashop_manufacturer_id'),
     ]
 
     def get_sale_price(self, record, tax):
@@ -464,7 +463,6 @@ class TemplateRecordImport(TranslatableRecordImporter):
     def _import_dependencies(self):
         self._import_default_category()
         self._import_categories()
-        self._import_manufacturer()
 
     def get_template_model_id(self):
         ir_model = self.env['ir.model'].search([
@@ -491,12 +489,6 @@ class TemplateRecordImport(TranslatableRecordImporter):
         for category in categories:
             self._check_dependency(category['id'],
                                    'prestashop.product.category')
-
-    def _import_manufacturer(self):
-        record = self.prestashop_record
-        if int(record['id_manufacturer']):
-            self._check_dependency(
-                record['id_manufacturer'], 'prestashop.manufacturer')
 
 
 @prestashop

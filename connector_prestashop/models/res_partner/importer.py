@@ -8,7 +8,6 @@ from openerp.addons.connector.queue.job import job
 from openerp.addons.connector.unit.mapper import (
     ImportMapper,
     mapping,
-    only_create,
 )
 from ...unit.importer import (
     PrestashopImporter,
@@ -293,43 +292,6 @@ class AddressBatchImporter(DelayedBatchImporter):
     _model_name = 'prestashop.address'
 
 
-@prestashop
-class ManufacturerImport(PrestashopImporter):
-    _model_name = ['prestashop.manufacturer']
-
-
-@prestashop
-class ManufacturerImportMapper(ImportMapper):
-    _model_name = 'prestashop.manufacturer'
-    direct = [
-        ('date_add', 'date_add'),
-        ('date_upd', 'date_upd'),
-        ('name', 'name_ext'),
-        ('name', 'name'),
-    ]
-
-    @mapping
-    def backend_id(self, record):
-        return {'backend_id': self.backend_record.id}
-
-    @mapping
-    def active(self, record):
-        return {'active_ext': record['active'] == '1'}
-
-    @mapping
-    @only_create
-    def assign_partner_category(self, record):
-        manufacturer_categ = self.env.ref(
-            'connector_prestashop.partner_manufacturer_tag')
-        return {'category_id': [(4, manufacturer_categ.id)]}
-
-
-@prestashop
-class ManufacturerBatchImport(DelayedBatchImporter):
-    """ Import the PrestaShop Manufacturers. """
-    _model_name = ['prestashop.manufacturer']
-
-
 @job(default_channel='root.prestashop')
 def import_customers_since(session, backend_id, since_date=None):
     """ Prepare the import of partners modified on PrestaShop """
@@ -348,17 +310,4 @@ def import_customers_since(session, backend_id, since_date=None):
 
     session.env['prestashop.backend'].browse(backend_id).write({
         'import_partners_since': now_fmt,
-    })
-
-
-@job(default_channel='root.prestashop')
-def import_manufacturers(session, backend_id, since_date):
-    filters = None
-    if since_date:
-        filters = {'date': '1',
-                   'filter[date_upd]': '>[%s]' % since_date}
-    now_fmt = datetime.now().strftime(DEFAULT_SERVER_DATETIME_FORMAT)
-    import_batch(session, 'prestashop.manufacturer', backend_id, filters)
-    session.env['prestashop.backend'].browse(backend_id).write({
-        'import_manufacturers_since': now_fmt
     })

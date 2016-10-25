@@ -47,7 +47,6 @@
         'views/connector_prestashop_menu.xml',
         'security/ir.model.access.csv',
         'security/prestashop_security.xml',
-        'data/connector_prestashop_data.xml',
         'data/ecommerce_data.xml',
     ],
     "installable": True,

@@ -16,7 +16,7 @@ from ...backend import prestashop
 
 from ..product_template.exporter import export_product_quantities
 from ..product_template.importer import import_inventory
-from ..res_partner.importer import import_customers_since, import_manufacturers
+from ..res_partner.importer import import_customers_since
 from ..delivery_carrier.importer import import_carriers
 from ..product_supplierinfo.importer import import_suppliers
 from ..account_invoice.importer import import_refunds
@@ -64,7 +64,6 @@ class PrestashopBackend(models.Model):
     import_products_since = fields.Datetime('Import Products since')
     import_refunds_since = fields.Datetime('Import Refunds since')
     import_suppliers_since = fields.Datetime('Import Suppliers since')
-    import_manufacturers_since = fields.Datetime('Import Manufacturers since')
     language_ids = fields.One2many(
         comodel_name='prestashop.res.lang',
         inverse_name='backend_id',
@@ -229,16 +228,6 @@ class PrestashopBackend(models.Model):
             import_suppliers.delay(session, backend_record.id, since_date)
         return True
 
-    @api.multi
-    def import_manufacturers(self):
-        session = ConnectorSession(
-            self.env.cr, self.env.uid, context=self.env.context)
-        for backend_record in self:
-            since_date = self._date_as_user_tz(
-                backend_record.import_manufacturers_since)
-            import_manufacturers.delay(session, backend_record.id, since_date)
-        return True
-
     def get_version_ps_key(self, key):
         keys_conversion = {
             '1.6.0.9': {
@@ -287,10 +276,6 @@ class PrestashopBackend(models.Model):
     @api.model
     def _scheduler_import_suppliers(self, domain=None):
         self.search(domain or []).import_suppliers()
-
-    @api.model
-    def _scheduler_import_manufacturers(self, domain=None):
-        self.search(domain or []).import_manufacturers()
 
     @api.multi
     def import_record(self, model_name, ext_id):

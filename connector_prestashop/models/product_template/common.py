@@ -103,10 +103,6 @@ class PrestashopProductTemplate(models.Model):
     )
     reference = fields.Char(string='Original reference')
     on_sale = fields.Boolean(string='Show on sale icon')
-    prestashop_manufacturer_id = fields.Many2one(
-        comodel_name='prestashop.manufacturer',
-        string='Manufacturer',
-    )
 
     @api.multi
     def recompute_prestashop_qty(self):

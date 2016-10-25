@@ -38,5 +38,4 @@ class PrestashopBinder(Binder):
         'prestashop.product.supplierinfo',
         'prestashop.mail.message',
         'prestashop.groups.pricelist',
-        'prestashop.manufacturer',
     ]
