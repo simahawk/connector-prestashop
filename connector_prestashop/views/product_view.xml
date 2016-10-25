@@ -99,7 +99,6 @@
                         <field name="available_for_order"/>
                         <field name="show_price"/>
                         <field name="on_sale"/>
-                        <field name="prestashop_manufacturer_id"/>
                     </group>
                 </form>
            </field>
