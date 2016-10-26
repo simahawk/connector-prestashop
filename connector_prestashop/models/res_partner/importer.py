@@ -8,7 +8,6 @@ from openerp.addons.connector.queue.job import job
 from openerp.addons.connector.unit.mapper import (
     ImportMapper,
     mapping,
-    only_create,
 )
 from ...unit.importer import (
     PrestashopImporter,
