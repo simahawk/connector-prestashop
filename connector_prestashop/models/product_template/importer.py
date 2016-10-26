@@ -247,6 +247,22 @@ class TemplateMapper(ImportMapper):
             }
         return {}
 
+    @mapping
+    def extras_manufacturer(self, record):
+        mapper = self.unit_for(ManufacturerProductImportMapper)
+        return mapper.map_record(record).values(**self.options)
+
+
+@prestashop
+class ManufacturerProductImportMapper(ImportMapper):
+    # For extend in connector_prestashop_manufacturer module, by this way we
+    # avoid have dependencies of other modules as procut_manufacturer
+    _model_name = 'prestashop.product.template'
+
+    @mapping
+    def extras(self, record):
+        return {}
+
 
 class ImportInventory(models.TransientModel):
     # In actual connector version is mandatory use a model
