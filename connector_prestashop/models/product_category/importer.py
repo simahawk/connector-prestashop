@@ -2,7 +2,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 import logging
-import datetime
+from datetime import datetime
 
 from ...backend import prestashop
 from ...unit.importer import (
@@ -58,13 +58,13 @@ class ProductCategoryMapper(ImportMapper):
     @mapping
     def data_add(self, record):
         if record['date_add'] == '0000-00-00 00:00:00':
-            return {'date_add': datetime.datetime.now()}
+            return {'date_add': datetime.now()}
         return {'date_add': record['date_add']}
 
     @mapping
     def data_upd(self, record):
         if record['date_upd'] == '0000-00-00 00:00:00':
-            return {'date_upd': datetime.datetime.now()}
+            return {'date_upd': datetime.now()}
         return {'date_upd': record['date_upd']}
 
 
