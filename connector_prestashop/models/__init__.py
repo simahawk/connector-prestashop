@@ -7,6 +7,7 @@ from . import account_tax
 from . import account_tax_group
 from . import delivery_carrier
 from . import mail_message
+from . import payment
 from . import prestashop_backend
 from . import product_category
 from . import product_image

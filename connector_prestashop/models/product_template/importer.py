@@ -323,10 +323,10 @@ class ProductInventoryImport(PrestashopImporter):
         return binder.to_odoo(record['id_product_attribute'], unwrap=True)
 
     def run(self, record):
-        self._check_dependency(
+        self._import_dependency(
             record['id_product'], 'prestashop.product.template')
         if record['id_product_attribute'] != '0':
-            self._check_dependency(
+            self._import_dependency(
                 record['id_product_attribute'],
                 'prestashop.product.combination')
 
@@ -490,8 +490,8 @@ class TemplateRecordImport(TranslatableRecordImporter):
         record = self.prestashop_record
         if int(record['id_category_default']):
             try:
-                self._check_dependency(record['id_category_default'],
-                                       'prestashop.product.category')
+                self._import_dependency(record['id_category_default'],
+                                        'prestashop.product.category')
             except PrestaShopWebServiceError:
                 pass
 
@@ -503,8 +503,8 @@ class TemplateRecordImport(TranslatableRecordImporter):
         if not isinstance(categories, list):
             categories = [categories]
         for category in categories:
-            self._check_dependency(category['id'],
-                                   'prestashop.product.category')
+            self._import_dependency(
+                category['id'], 'prestashop.product.category')
 
 
 @prestashop
