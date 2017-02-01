@@ -2,8 +2,6 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 from openerp import api, fields, models
-from ...backend import prestashop
-from ...unit.backend_adapter import GenericAdapter
 
 from ...backend import prestashop
 from ...unit.backend_adapter import GenericAdapter
@@ -27,7 +25,7 @@ class AccountInvoice(models.Model):
                 continue
             sale_order = sale_order[0]
             discount_product_id = sale_order.backend_id.discount_product_id.id
-            for invoice_line in invoice.invoice_line:
+            for invoice_line in invoice.invoice_line_ids:
                 if invoice_line.product_id.id != discount_product_id:
                     continue
                 amount = invoice_line.price_subtotal

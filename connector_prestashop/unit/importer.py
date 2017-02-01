@@ -15,7 +15,6 @@ from openerp.addons.connector.exception import (
     RetryableJobError,
     FailedJobError,
 )
-from ..connector import get_environment
 
 
 _logger = logging.getLogger(__name__)
@@ -49,7 +48,8 @@ class PrestashopImporter(Importer):
         return
 
     def _import_dependency(self, prestashop_id, binding_model,
-                           importer_class=None, always=False):
+                           importer_class=None, always=False,
+                           **kwargs):
         """
         Import a dependency. The importer class is a subclass of
         ``PrestashopImporter``. A specific class can be defined.
@@ -68,6 +68,7 @@ class PrestashopImporter(Importer):
                        it is still skipped if it has not been modified on
                        PrestaShop
         :type always: boolean
+        :param kwargs: additional keyword arguments are passed to the importer
         """
         if not prestashop_id:
             return
@@ -76,7 +77,7 @@ class PrestashopImporter(Importer):
         binder = self.binder_for(binding_model)
         if always or not binder.to_odoo(prestashop_id):
             importer = self.unit_for(importer_class, model=binding_model)
-            importer.run(prestashop_id)
+            importer.run(prestashop_id, **kwargs)
 
     def _map_data(self):
         """ Returns an instance of
@@ -104,6 +105,12 @@ class PrestashopImporter(Importer):
 
     def _create_context(self):
         return {'connector_no_export': True}
+
+    def _create_data(self, map_record):
+        return map_record.values(for_create=True)
+
+    def _update_data(self, map_record):
+        return map_record.values()
 
     def _create(self, data):
         """ Create the OpenERP record """
@@ -163,9 +170,60 @@ class PrestashopImporter(Importer):
                     cr.rollback()
                     raise
                 else:
-                    cr.commit()
+                    # Despite what pylint says, this a perfectly valid
+                    # commit (in a new cursor). Disable the warning.
+                    cr.commit()  # pylint: disable=invalid-commit
 
-    def run(self, prestashop_id):
+    def _check_in_new_connector_env(self):
+        with self.do_in_new_connector_env() as new_connector_env:
+            # Even when we use an advisory lock, we may have
+            # concurrent issues.
+            # Explanation:
+            # We import Partner A and B, both of them import a
+            # partner category X.
+            #
+            # The squares represent the duration of the advisory
+            # lock, the transactions starts and ends on the
+            # beginnings and endings of the 'Import Partner'
+            # blocks.
+            # T1 and T2 are the transactions.
+            #
+            # ---Time--->
+            # > T1 /------------------------\
+            # > T1 | Import Partner A       |
+            # > T1 \------------------------/
+            # > T1        /-----------------\
+            # > T1        | Imp. Category X |
+            # > T1        \-----------------/
+            #                     > T2 /------------------------\
+            #                     > T2 | Import Partner B       |
+            #                     > T2 \------------------------/
+            #                     > T2        /-----------------\
+            #                     > T2        | Imp. Category X |
+            #                     > T2        \-----------------/
+            #
+            # As you can see, the locks for Category X do not
+            # overlap, and the transaction T2 starts before the
+            # commit of T1. So no lock prevents T2 to import the
+            # category X and T2 does not see that T1 already
+            # imported it.
+            #
+            # The workaround is to open a new DB transaction at the
+            # beginning of each import (e.g. at the beginning of
+            # "Imp. Category X") and to check if the record has been
+            # imported meanwhile. If it has been imported, we raise
+            # a Retryable error so T2 is rollbacked and retried
+            # later (and the new T3 will be aware of the category X
+            # from the its inception).
+            binder = new_connector_env.get_connector_unit(Binder)
+            if binder.to_odoo(self.prestashop_id):
+                raise RetryableJobError(
+                    'Concurrent error. The job will be retried later',
+                    seconds=RETRY_WHEN_CONCURRENT_DETECTED,
+                    ignore_retry=True
+                )
+
+    def run(self, prestashop_id, **kwargs):
         """ Run the synchronization
 
         :param prestashop_id: identifier of the record on PrestaShop
@@ -180,56 +238,14 @@ class PrestashopImporter(Importer):
         # Keep a lock on this import until the transaction is committed
         self.advisory_lock_or_retry(lock_name,
                                     retry_seconds=RETRY_ON_ADVISORY_LOCK)
-        self.prestashop_record = self._get_prestashop_data()
+        if not self.prestashop_record:
+            self.prestashop_record = self._get_prestashop_data()
+        # if self.model._name == 'prestashop.sale.order':
+        #     import pdb; pdb.set_trace()
+
         binding = self._get_binding()
         if not binding:
-            with self.do_in_new_connector_env() as new_connector_env:
-                # Even when we use an advisory lock, we may have
-                # concurrent issues.
-                # Explanation:
-                # We import Partner A and B, both of them import a
-                # partner category X.
-                #
-                # The squares represent the duration of the advisory
-                # lock, the transactions starts and ends on the
-                # beginnings and endings of the 'Import Partner'
-                # blocks.
-                # T1 and T2 are the transactions.
-                #
-                # ---Time--->
-                # > T1 /------------------------\
-                # > T1 | Import Partner A       |
-                # > T1 \------------------------/
-                # > T1        /-----------------\
-                # > T1        | Imp. Category X |
-                # > T1        \-----------------/
-                #                     > T2 /------------------------\
-                #                     > T2 | Import Partner B       |
-                #                     > T2 \------------------------/
-                #                     > T2        /-----------------\
-                #                     > T2        | Imp. Category X |
-                #                     > T2        \-----------------/
-                #
-                # As you can see, the locks for Category X do not
-                # overlap, and the transaction T2 starts before the
-                # commit of T1. So no lock prevents T2 to import the
-                # category X and T2 does not see that T1 already
-                # imported it.
-                #
-                # The workaround is to open a new DB transaction at the
-                # beginning of each import (e.g. at the beginning of
-                # "Imp. Category X") and to check if the record has been
-                # imported meanwhile. If it has been imported, we raise
-                # a Retryable error so T2 is rollbacked and retried
-                # later (and the new T3 will be aware of the category X
-                # from the its inception).
-                binder = new_connector_env.get_connector_unit(Binder)
-                if binder.to_odoo(self.prestashop_id):
-                    raise RetryableJobError(
-                        'Concurrent error. The job will be retried later',
-                        seconds=RETRY_WHEN_CONCURRENT_DETECTED,
-                        ignore_retry=True
-                    )
+            self._check_in_new_connector_env()
 
         skip = self._has_to_skip()
         if skip:
@@ -238,9 +254,9 @@ class PrestashopImporter(Importer):
         # import the missing linked resources
         self._import_dependencies()
 
-        self._import(binding)
+        self._import(binding, **kwargs)
 
-    def _import(self, binding):
+    def _import(self, binding, **kwargs):
         """ Import the external record.
 
         Can be inherited to modify for instance the session
@@ -251,9 +267,9 @@ class PrestashopImporter(Importer):
         map_record = self._map_data()
 
         if binding:
-            record = map_record.values()
+            record = self._update_data(map_record)
         else:
-            record = map_record.values(for_create=True)
+            record = self._create_data(map_record)
 
         # special check on data before import
         self._validate_data(record)
@@ -314,6 +330,7 @@ class AddCheckpoint(ConnectorUnit):
     def run(self, binding_id):
         record = self.model.browse(binding_id)
         self.backend_record.add_checkpoint(
+            session=self.session,
             model=record._model._name,
             record_id=record.id,
         )
@@ -450,7 +467,7 @@ class TranslatableRecordImporter(PrestashopImporter):
         """
         return self.mapper.map_record(self.main_lang_data)
 
-    def _import(self, binding):
+    def _import(self, binding, **kwargs):
         """ Import the external record.
 
         Can be inherited to modify for instance the session
@@ -474,20 +491,26 @@ class TranslatableRecordImporter(PrestashopImporter):
         """ Hook called at the end of the import """
         for lang_code, lang_record in self.other_langs_data.iteritems():
             map_record = self.mapper.map_record(lang_record)
-            binding.with_context(lang=lang_code).write(map_record.values())
+            binding.with_context(
+                lang=lang_code,
+                connector_no_export=True,
+            ).write(map_record.values())
 
 
 @job(default_channel='root.prestashop')
 def import_batch(session, model_name, backend_id, filters=None, **kwargs):
     """ Prepare a batch import of records from PrestaShop """
-    env = get_environment(session, model_name, backend_id)
+    backend = session.env['prestashop.backend'].browse(backend_id)
+    env = backend.get_environment(model_name, session=session)
     importer = env.get_connector_unit(BatchImporter)
     importer.run(filters=filters, **kwargs)
 
 
 @job(default_channel='root.prestashop')
-def import_record(session, model_name, backend_id, prestashop_id):
+def import_record(
+        session, model_name, backend_id, prestashop_id, **kwargs):
     """ Import a record from PrestaShop """
-    env = get_environment(session, model_name, backend_id)
+    backend = session.env['prestashop.backend'].browse(backend_id)
+    env = backend.get_environment(model_name, session=session)
     importer = env.get_connector_unit(PrestashopImporter)
-    importer.run(prestashop_id)
+    importer.run(prestashop_id, **kwargs)

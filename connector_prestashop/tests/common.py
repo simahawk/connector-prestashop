@@ -2,6 +2,7 @@
 # © 2016 Camptocamp SA
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html)
 
+import functools
 
 import openerp.tests.common as common
 from openerp.addons.connector.session import ConnectorSession
@@ -57,6 +58,17 @@ def quiet_logger(logger_path):
     logger.setLevel(logging.ERROR)
     yield
     logger.setLevel(level)
+
+
+def assert_no_job_delayed(func):
+    def _decorated(self, *args, **kwargs):
+        job_count = self.env['queue.job'].search_count([])
+        result = func(self, *args, **kwargs)
+        self.assertEqual(job_count, self.env['queue.job'].search_count([]),
+                         "New jobs have been delayed during the test, this "
+                         "is unexpected.")
+        return result
+    return functools.wraps(func)(_decorated)
 
 
 class PrestashopTransactionCase(common.TransactionCase):
@@ -123,11 +135,32 @@ class PrestashopTransactionCase(common.TransactionCase):
          - prestashop.shop(name: Shop2, company_id: res.company(2,))
          + prestashop.shop(name: Shop3, company_id: res.company(1,))
 
+         The expected fields can follow record relations with the dotted
+         notation style, but using '__' instead of '.'. Example::
+
+            ExpectedShop = namedtuple('ExpectedShop',
+                                      'name company_id__name')
+            expected = [
+                ExpectedShop(
+                    name='Shop1',
+                    company__name='Swiss Company',
+                ),
+            ]
+            self.assert_records(expected, shops)
+
+
         :param expected_records: list of namedtuple with matching values
                                  for the records
         :param records: the recordset to check
         :raises: AssertionError if the values do not match
         """
+
+        def get_record_field(record, field):
+            attrs = field.split('__')
+            for attr in attrs:
+                record = record[attr]
+            return record
+
         model_name = records._model._name
         records = list(records)
         assert len(expected_records) > 0, "must have > 0 expected record"
@@ -136,8 +169,9 @@ class PrestashopTransactionCase(common.TransactionCase):
         equals = []
         for expected in expected_records:
             for record in records:
-                for field, value in expected._asdict().iteritems():
-                    if not getattr(record, field) == value:
+                for field, expected_value in expected._asdict().iteritems():
+                    record_value = get_record_field(record, field)
+                    if not record_value == expected_value:
                         break
                 else:
                     records.remove(record)
@@ -151,8 +185,11 @@ class PrestashopTransactionCase(common.TransactionCase):
             message.append(
                 u' ✓ {}({})'.format(
                     model_name,
-                    u', '.join(u'%s: %s' % (field, getattr(record, field)) for
-                               field in fields)
+                    u', '.join(u'%s: %s' % (
+                        field.replace('__', '.'),
+                        get_record_field(record, field))
+                        for field in fields
+                    )
                 )
             )
         for expected in not_found:
@@ -160,8 +197,8 @@ class PrestashopTransactionCase(common.TransactionCase):
             message.append(
                 u' - {}({})'.format(
                     model_name,
-                    u', '.join(u'%s: %s' % (k, v) for
-                               k, v in expected._asdict().iteritems())
+                    u', '.join(u'%s: %s' % (field.replace('__', '.'), v) for
+                               field, v in expected._asdict().iteritems())
                 )
             )
         for record in records:
@@ -169,8 +206,10 @@ class PrestashopTransactionCase(common.TransactionCase):
             message.append(
                 u' + {}({})'.format(
                     model_name,
-                    u', '.join(u'%s: %s' % (field, getattr(record, field)) for
-                               field in fields)
+                    u', '.join(u'%s: %s' % (
+                        field.replace('__', '.'),
+                        get_record_field(record, field))
+                        for field in fields)
                 )
             )
         if not_found or records:
@@ -261,6 +300,26 @@ class PrestashopTransactionCase(common.TransactionCase):
             'account_id': self.tax_account.id,
             'price_include': False,
         })
+
+    def _create_product_binding(self, name=None,
+                                template_ps_id=None,
+                                variant_ps_id=None):
+        product = self.env['product.product'].create({
+            'name': name
+        })
+        template = product.product_tmpl_id
+        template_binding = self.create_binding_no_export(
+            'prestashop.product.template',
+            template.id,
+            prestashop_id=template_ps_id,
+            default_shop_id=self.shop.id,
+        )
+        return self.create_binding_no_export(
+            'prestashop.product.combination',
+            product.id,
+            prestashop_id=variant_ps_id,
+            main_template_id=template_binding.id,
+        )
 
     @staticmethod
     def xmltodict(xml):

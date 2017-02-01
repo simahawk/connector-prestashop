@@ -4,7 +4,6 @@
 
 from openerp.addons.connector.queue.job import job
 from openerp.addons.connector.unit.synchronizer import Exporter
-from ...connector import get_environment
 from ...backend import prestashop
 
 
@@ -12,7 +11,7 @@ from ...backend import prestashop
 class SaleStateExporter(Exporter):
     _model_name = ['prestashop.sale.order']
 
-    def run(self, prestashop_id, state):
+    def run(self, prestashop_id, state, **kwargs):
         datas = {
             'order_history': {
                 'id_order': prestashop_id,
@@ -42,6 +41,6 @@ def export_sale_state(session, model_name, record_id):
         new_state = find_prestashop_state(session, sale.state, backend)
         if not new_state:
             continue
-        env = get_environment(session, binding_model._name, backend.id)
+        env = backend.get_environment(binding_model._name, session=session)
         sale_exporter = env.get_connector_unit(SaleStateExporter)
         sale_exporter.run(sale.prestashop_id, new_state)

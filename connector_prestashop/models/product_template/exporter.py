@@ -6,7 +6,6 @@ from openerp.addons.connector.queue.job import job
 from openerp.addons.connector.unit.synchronizer import Exporter
 
 from ...unit.backend_adapter import GenericAdapter
-from ...connector import get_environment
 from ...backend import prestashop
 
 
@@ -22,7 +21,7 @@ class ProductInventoryExporter(Exporter):
             'filter[id_product_attribute]': 0
         }
 
-    def run(self, binding_id, fields):
+    def run(self, binding_id, fields, **kwargs):
         """ Export the product inventory to PrestaShop """
         template = self.model.browse(binding_id)
         adapter = self.unit_for(GenericAdapter, '_import_stock_available')
@@ -31,13 +30,13 @@ class ProductInventoryExporter(Exporter):
 
 
 @job(default_channel='root.prestashop')
-def export_inventory(session, model_name, record_id, fields=None):
+def export_inventory(session, model_name, record_id, fields=None, **kwargs):
     """ Export the inventory configuration and quantity of a product. """
-    template = session.env[model_name].browse(record_id)
-    backend_id = template.backend_id.id
-    env = get_environment(session, model_name, backend_id)
+    binding = session.env[model_name].browse(record_id)
+    backend = binding.backend_id
+    env = backend.get_environment(model_name, session=session)
     inventory_exporter = env.get_connector_unit(ProductInventoryExporter)
-    return inventory_exporter.run(record_id, fields)
+    return inventory_exporter.run(record_id, fields, **kwargs)
 
 
 @job(default_channel='root.prestashop')

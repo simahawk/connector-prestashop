@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
-from openerp import fields
+from openerp import _, fields
 
+from openerp.addons.connector.exception import MappingError
 from openerp.addons.connector.queue.job import job
 from openerp.addons.connector.unit.mapper import (
     mapping,
@@ -29,21 +30,21 @@ class RefundImporter(PrestashopImporter):
         )
         self._import_dependency(record['id_order'], 'prestashop.sale.order')
 
-    def _after_import(self, binding):
-        super(RefundImporter, self)._after_import(binding)
-        # FIXME: context should be frozen
-        context = self.session.context
-        context['company_id'] = self.backend_record.company_id.id
-
+    def _open_refund(self, binding):
         invoice = binding.odoo_id
-
         if invoice.amount_total == float(self.prestashop_record['amount']):
             invoice.signal_workflow('invoice_open')
         else:
             self.backend_record.add_checkpoint(
                 model='account.invoice',
                 record_id=invoice.id,
+                message=_('The refund for order %s has a different amount '
+                          'in PrestaShop and in Odoo.') % invoice.origin
             )
+
+    def _after_import(self, binding):
+        super(RefundImporter, self)._after_import(binding)
+        self._open_refund(binding)
 
 
 @prestashop
@@ -57,10 +58,12 @@ class RefundMapper(ImportMapper):
 
     @mapping
     def journal(self, record):
-        journal = self.env['account.journal'].search([
-            ('company_id', '=', self.backend_record.company_id.id),
-            ('type', '=', 'sale_refund'),
-        ], limit=1)
+        journal = self.backend_record.refund_journal_id
+        if not journal:
+            raise MappingError(
+                _('The refund journal must be configured on '
+                  'the PrestaShop Backend.')
+            )
         return {'journal_id': journal.id}
 
     def _get_order(self, record):
@@ -71,7 +74,7 @@ class RefundMapper(ImportMapper):
     def from_sale_order(self, record):
         sale_order = self._get_order(record)
         fiscal_position = None
-        if sale_order.fiscal_position:
+        if sale_order.fiscal_position_id:
             fiscal_position = sale_order.fiscal_position_id.id
         return {
             'origin': sale_order['name'],
@@ -80,8 +83,7 @@ class RefundMapper(ImportMapper):
 
     @mapping
     def comment(self, record):
-        # FIXME: should be a translated text
-        return {'comment': 'Montant dans prestashop : %s' % (record['amount'])}
+        return {'comment': _('PrestaShop amount: %s') % record['amount']}
 
     @mapping
     @only_create
@@ -101,7 +103,7 @@ class RefundMapper(ImportMapper):
         for slip_detail in slip_details:
             line = self._invoice_line(slip_detail, fpos)
             lines.append((0, 0, line))
-        return {'invoice_line': lines}
+        return {'invoice_line_ids': lines}
 
     def _invoice_line_shipping(self, record, fpos):
         order_line = self._get_shipping_order_line(record)
@@ -116,9 +118,9 @@ class RefundMapper(ImportMapper):
         product = self.env['product.product'].browse(
             order_line['product_id'][0]
         )
-        account_id = product.property_account_income.id
+        account_id = product.property_account_income_id.id
         if not account_id:
-            account_id = product.categ_id.property_account_income_categ.id
+            account_id = product.categ_id.property_account_income_categ_id.id
         if fpos:
             fpos_obj = self.env['account.fiscal.position']
             account_id = fpos_obj.map_account(
@@ -163,7 +165,7 @@ class RefundMapper(ImportMapper):
             name = order_line.name
             for tax in order_line.tax_id:
                 tax_ids.append(tax.id)
-            account_id = product.property_account_income.id
+            account_id = product.property_account_income_id.id
             if not account_id:
                 categ = product.categ_id
                 account_id = categ.property_account_income_categ_id.id
@@ -179,14 +181,17 @@ class RefundMapper(ImportMapper):
             quantity = 1
         else:
             quantity = record['product_quantity']
+
         if self.backend_record.taxes_included:
             price_unit = record['amount_tax_incl']
         else:
             price_unit = record['amount_tax_excl']
+
         try:
             price_unit = float(price_unit) / float(quantity)
         except ValueError:
             pass
+
         discount = False
         if price_unit in ['0.00', ''] and order_line is not None:
             price_unit = order_line['price_unit']
@@ -245,12 +250,12 @@ class RefundBatchImporter(DelayedBatchImporter):
 
 
 @job(default_channel='root.prestashop')
-def import_refunds(session, backend_id, since_date):
+def import_refunds(session, backend_id, since_date, **kwargs):
     filters = None
     if since_date:
         filters = {'date': '1', 'filter[date_upd]': '>[%s]' % (since_date)}
     now_fmt = fields.Datetime.now()
-    import_batch(session, 'prestashop.refund', backend_id, filters)
+    import_batch(session, 'prestashop.refund', backend_id, filters, **kwargs)
     session.env['prestashop.backend'].browse(backend_id).write({
         'import_refunds_since': now_fmt
     })

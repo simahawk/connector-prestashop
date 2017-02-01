@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html)
 
-from openerp import _
+
 from openerp.addons.connector.queue.job import job
 from openerp.addons.connector.unit.mapper import (mapping,
                                                   ImportMapper)
 
 from ...backend import prestashop
-from ...connector import get_environment
 from ...unit.importer import PrestashopImporter
 
 import mimetypes
 import logging
+
+from openerp import _
+
 _logger = logging.getLogger(__name__)
 try:
     from prestapyt import PrestaShopWebServiceError
@@ -77,34 +79,49 @@ class ProductImageImporter(PrestashopImporter):
         """ Return the raw PrestaShop data for ``self.prestashop_id`` """
         return self.backend_adapter.read(self.template_id, self.image_id)
 
-    def run(self, template_id, image_id):
+    def run(self, template_id, image_id, **kwargs):
         self.template_id = template_id
         self.image_id = image_id
+
         try:
-            super(ProductImageImporter, self).run(image_id)
+            super(ProductImageImporter, self).run(image_id, **kwargs)
         except PrestaShopWebServiceError as error:
-            msg = _(
-                'Import of image id `%s` failed. '
-                'Error: `%s`'
-            ) % (image_id, error.msg)
-            self.backend_record.add_checkpoint(
-                model='product.template',
-                record_id=int(template_id),
-                message=msg)
+            binder = self.binder_for('prestashop.product.template')
+            template = binder.to_odoo(template_id, unwrap=True)
+            if template:
+                msg = _(
+                    'Import of image id `%s` failed. '
+                    'Error: `%s`'
+                ) % (image_id, error.msg)
+                self.backend_record.add_checkpoint(
+                    model='product.template',
+                    record_id=template.id,
+                    message=msg)
+            else:
+                msg = _(
+                    'Import of image id `%s` of PrestaShop product '
+                    'with id `%s` failed. '
+                    'Error: `%s`'
+                ) % (image_id, template_id, error.msg)
+                self.backend_record.add_checkpoint(message=msg)
 
 
 @job(default_channel='root.prestashop')
 def import_product_image(session, model_name, backend_id, product_tmpl_id,
-                         image_id):
+                         image_id, **kwargs):
     """Import a product image"""
-    env = get_environment(session, model_name, backend_id)
-    importer = env.get_connector_unit(PrestashopImporter)
-    importer.run(product_tmpl_id, image_id)
+    ctx = dict(session.context, **kwargs)
+    backend = session.env['prestashop.backend'].browse(backend_id)
+    env = backend.get_environment(model_name, session=session)
+    with env.session.change_context(ctx):
+        importer = env.get_connector_unit(PrestashopImporter)
+        importer.run(product_tmpl_id, image_id)
 
 
 @job(default_channel='root.prestashop')
 def set_product_image_variant(
-        session, model_name, backend_id, combination_ids):
-    env = get_environment(session, model_name, backend_id)
+        session, model_name, backend_id, combination_ids, **kwargs):
+    backend = session.env['prestashop.backend'].browse(backend_id)
+    env = backend.get_environment(model_name, session=session)
     importer = env.get_connector_unit(PrestashopImporter)
-    importer.set_variant_images(combination_ids)
+    importer.set_variant_images(combination_ids, **kwargs)

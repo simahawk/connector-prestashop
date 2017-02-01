@@ -1,43 +1,47 @@
 # -*- coding: utf-8 -*-
-# License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
+# License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html)
 
-import logging
-from datetime import datetime
-
-from openerp import models
-
+from openerp import _, models, fields
 from openerp.addons.connector.queue.job import job
+from openerp.addons.connector.unit.mapper import (
+    mapping,
+    only_create,
+    ImportMapper
+)
 
-from ...connector import get_environment
-from ...backend import prestashop
 from ...unit.importer import (
     DelayedBatchImporter,
-    PrestashopImporter,
-    import_batch,
     import_record,
-    TranslatableRecordImporter
+    import_batch,
+    PrestashopImporter,
+    TranslatableRecordImporter,
 )
-from ..product_image.importer import (
-    set_product_image_variant,
-    import_product_image
-)
-from openerp.addons.connector.unit.mapper import ImportMapper, mapping
-from ...unit.mapper import backend_to_m2o
+from openerp.addons.connector.unit.mapper import backend_to_m2o
 from ...unit.backend_adapter import GenericAdapter
-from openerp.addons.product.product import check_ean
-from openerp.tools import DEFAULT_SERVER_DATETIME_FORMAT
+from ...backend import prestashop
+from ..product_image.importer import (
+    import_product_image,
+    set_product_image_variant,
+)
 
+import datetime
+import logging
 _logger = logging.getLogger(__name__)
-
-try:
-    from prestapyt import PrestaShopWebServiceError
-except ImportError:
-    _logger.debug('Can not `from prestapyt import PrestaShopWebServiceError`.')
 
 try:
     import html2text
 except ImportError:
-    _logger.debug('Can not `import html2text`.')
+    _logger.debug('Cannot import `html2text`')
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    _logger.debug('Cannot import `bs4`')
+
+try:
+    from prestapyt import PrestaShopWebServiceError
+except ImportError:
+    _logger.debug('Cannot import from `prestapyt`')
 
 
 @prestashop
@@ -45,9 +49,8 @@ class TemplateMapper(ImportMapper):
     _model_name = 'prestashop.product.template'
 
     direct = [
-        ('description', 'description_html'),
-        ('description_short', 'description_short_html'),
         ('weight', 'weight'),
+        ('wholesale_price', 'wholesale_price'),
         ('wholesale_price', 'standard_price'),
         (backend_to_m2o('id_shop_default'), 'default_shop_id'),
         ('link_rewrite', 'link_rewrite'),
@@ -56,34 +59,41 @@ class TemplateMapper(ImportMapper):
         ('on_sale', 'on_sale'),
     ]
 
-    def get_sale_price(self, record, tax):
-        price_adapter = self.unit_for(
-            GenericAdapter, 'prestashop.product.combination')
-        combination = price_adapter.read(
-            record['id_default_combination']['value'])
-        impact_price = float(combination['price'] or '0.0')
-        price = float(record['price'] or '0.0')
-        if tax:
-            tax = tax[:1]
-            return (price / (1 + tax.amount) - impact_price) * (1 + tax.amount)
-        price = float(record['price'] or '0.0') - impact_price
-        return price
+    def _apply_taxes(self, tax, price):
+        if self.backend_record.taxes_included == tax.price_include:
+            return price
+        factor_tax = tax.price_include and (1 + tax.amount / 100) or 1.0
+        if self.backend_record.taxes_included:
+            if not tax.price_include:
+                return price / factor_tax
+        else:
+            if tax.price_include:
+                return price * factor_tax
 
     @mapping
     def list_price(self, record):
         price = 0.0
         tax = self._get_tax_ids(record)
-        associations = record.get('associations', {})
-        combinations = associations.get('combinations', {}).get(
-            'combinations', [])
-        if not isinstance(combinations, list):
-            combinations = [combinations]
-        if combinations:
-            price = self.get_sale_price(record, tax)
-        else:
-            if record['price'] != '':
-                price = float(record['price'])
+        if record['price'] != '':
+            price = float(record['price'])
+        price = self._apply_taxes(tax, price)
         return {'list_price': price}
+
+    @mapping
+    def tags_to_text(self, record):
+        associations = record.get('associations', {})
+        tags = associations.get('tags', {}).get(
+            self.backend_record.get_version_ps_key('tag'), [])
+        tag_adapter = self.unit_for(GenericAdapter, '_prestashop_product_tag')
+        if not isinstance(tags, list):
+            tags = [tags]
+        if tags:
+            ps_tags = tag_adapter.search(filters={
+                'filter[id]': '[%s]' % '|'.join(x['id'] for x in tags),
+                'display': '[name]'
+            })
+            if ps_tags:
+                return {'tags': ','.join(x['name'] for x in ps_tags)}
 
     @mapping
     def name(self, record):
@@ -94,19 +104,29 @@ class TemplateMapper(ImportMapper):
     @mapping
     def date_add(self, record):
         if record['date_add'] == '0000-00-00 00:00:00':
-            return {'date_add': datetime.now()}
+            return {'date_add': datetime.datetime.now()}
         return {'date_add': record['date_add']}
 
     @mapping
     def date_upd(self, record):
         if record['date_upd'] == '0000-00-00 00:00:00':
-            return {'date_upd': datetime.now()}
+            return {'date_upd': datetime.datetime.now()}
         return {'date_upd': record['date_upd']}
 
     def has_combinations(self, record):
-        combinations = record.get('associations', {}).get(
-            'combinations', {}).get('combinations', [])
-        return len(combinations) != 0
+        associations = record.get('associations', {})
+        combinations = associations.get('combinations', {}).get(
+            self.backend_record.get_version_ps_key('combinations'))
+        return len(combinations or '') != 0
+
+    @only_create
+    @mapping
+    def odoo_id(self, record):
+        """ Will bind the product to an existing one with the same code """
+        product = self.env['product.template'].search(
+            [('default_code', '=', record['reference'])], limit=1)
+        if product:
+            return {'odoo_id': product.id}
 
     def _template_code_exists(self, code):
         model = self.session.env['product.template']
@@ -140,10 +160,24 @@ class TemplateMapper(ImportMapper):
         html.ignore_links = True
         return html.handle(content)
 
+    @staticmethod
+    def sanitize_html(content):
+        content = BeautifulSoup(content, 'html.parser')
+        # Prestashop adds both 'lang="fr-ch"' and 'xml:lang="fr-ch"'
+        # but Odoo tries to parse the xml for the translation and fails
+        # due to the unknow namespace
+        for child in content.find_all(lambda tag: tag.has_attr('xml:lang')):
+            del child['xml:lang']
+        return content.prettify()
+
     @mapping
-    def description(self, record):
+    def descriptions(self, record):
         return {
             'description': self.clear_html_field(
+                record.get('description_short', '')),
+            'description_html': self.sanitize_html(
+                record.get('description', '')),
+            'description_short_html': self.sanitize_html(
                 record.get('description_short', '')),
         }
 
@@ -162,41 +196,31 @@ class TemplateMapper(ImportMapper):
         return {'purchase_ok': True}
 
     @mapping
-    def categ_id(self, record):
-        if not int(record['id_category_default']):
-            return
-        category = self.binder_for(
-            'prestashop.product.category').to_odoo(
-                record['id_category_default'], unwrap=True)
-
-        if category:
-            return {'categ_id': category.id}
-
-        categories = record['associations'].get('categories', {}).get(
-            self.backend_record.get_version_ps_key('category'), [])
-        if not isinstance(categories, list):
-            categories = [categories]
-        if not categories:
-            return
-        category = self.binder_for(
-            'prestashop.product.category').to_odoo(
-                categories[0]['id'], unwrap=True)
-        return {'categ_id': category.id}
-
-    @mapping
     def categ_ids(self, record):
         categories = record['associations'].get('categories', {}).get(
             self.backend_record.get_version_ps_key('category'), [])
         if not isinstance(categories, list):
             categories = [categories]
-        product_categories = []
-        for category in categories:
-            category_id = self.binder_for(
-                'prestashop.product.category').to_odoo(
-                    category['id'], unwrap=True).id
-            product_categories.append(category_id)
+        product_categories = self.env['product.category'].browse()
+        binder = self.binder_for('prestashop.product.category')
+        for ps_category in categories:
+            product_categories |= binder.to_odoo(
+                ps_category['id'],
+                unwrap=True,
+            )
+        return {'categ_ids': [(6, 0, product_categories.ids)]}
 
-        return {'categ_ids': [(6, 0, product_categories)]}
+    @mapping
+    def default_category_id(self, record):
+        if not int(record['id_category_default']):
+            return
+        binder = self.binder_for('prestashop.product.category')
+        category = binder.to_odoo(
+            record['id_category_default'],
+            unwrap=True,
+        )
+        if category:
+            return {'prestashop_default_category_id': category.id}
 
     @mapping
     def backend_id(self, record):
@@ -207,20 +231,24 @@ class TemplateMapper(ImportMapper):
         return {'company_id': self.backend_record.company_id.id}
 
     @mapping
-    def ean13(self, record):
+    def barcode(self, record):
         if self.has_combinations(record):
             return {}
-        if record['ean13'] in ['', '0']:
+        barcode = record.get('barcode') or record.get('ean13')
+        if barcode in ['', '0']:
             return {}
-        if check_ean(record['ean13']):
-            return {'ean13': record['ean13']}
+        if self.env['barcode.nomenclature'].check_ean(barcode):
+            return {'barcode': barcode}
         return {}
 
     def _get_tax_ids(self, record):
         # if record['id_tax_rules_group'] == '0':
         #     return {}
-        tax_group = self.binder_for('prestashop.account.tax.group').to_odoo(
-            record['id_tax_rules_group'], unwrap=True)
+        binder = self.binder_for('prestashop.account.tax.group')
+        tax_group = binder.to_odoo(
+            record['id_tax_rules_group'],
+            unwrap=True,
+        )
         return tax_group.tax_ids
 
     @mapping
@@ -239,13 +267,9 @@ class TemplateMapper(ImportMapper):
         return {"type": 'product'}
 
     @mapping
-    def procure_method(self, record):
-        if record['type'] == 'pack':
-            return {
-                'procure_method': 'make_to_order',
-                'supply_method': 'produce',
-            }
-        return {}
+    def extras_features(self, record):
+        mapper = self.unit_for(FeaturesProductImportMapper)
+        return mapper.map_record(record).values(**self.options)
 
     @mapping
     def extras_manufacturer(self, record):
@@ -255,13 +279,31 @@ class TemplateMapper(ImportMapper):
 
 @prestashop
 class ManufacturerProductImportMapper(ImportMapper):
-    # For extend in connector_prestashop_manufacturer module, by this way we
-    # avoid have dependencies of other modules as procut_manufacturer
+    # To extend in connector_prestashop_manufacturer module. In this way we
+    # dependencies on other modules like product_manufacturer
     _model_name = 'prestashop.product.template'
 
     @mapping
-    def extras(self, record):
+    def extrextras_manufacturer(self, record):
         return {}
+
+
+@prestashop
+class FeaturesProductImportMapper(ImportMapper):
+    # To extend in connector_prestashop_manufacturer module. In this way we
+    # dependencies on other modules like product_custom_info
+    _model_name = 'prestashop.product.template'
+
+    @mapping
+    def extras_features(self, record):
+        return {}
+
+
+@prestashop
+class TemplateAdapter(GenericAdapter):
+    _model_name = 'prestashop.product.template'
+    _prestashop_model = 'products'
+    _export_node_name = 'product'
 
 
 class ImportInventory(models.TransientModel):
@@ -270,34 +312,37 @@ class ImportInventory(models.TransientModel):
 
 
 @prestashop
-class ProductInventoryBatchImport(DelayedBatchImporter):
+class ProductInventoryBatchImporter(DelayedBatchImporter):
     _model_name = ['_import_stock_available']
 
     def run(self, filters=None, **kwargs):
         if filters is None:
             filters = {}
-        filters['display'] = '[id_product,id_product_attribute]'
-        return super(ProductInventoryBatchImport, self).run(filters, **kwargs)
+        filters['display'] = '[id,id_product,id_product_attribute]'
+        _super = super(ProductInventoryBatchImporter, self)
+        return _super.run(filters, **kwargs)
 
     def _run_page(self, filters, **kwargs):
         records = self.backend_adapter.get(filters)
         for record in records['stock_availables']['stock_available']:
-            self._import_record(record, **kwargs)
+            self._import_record(record['id'], record=record, **kwargs)
         return records['stock_availables']['stock_available']
 
-    def _import_record(self, record, **kwargs):
+    def _import_record(self, record_id, record=None, **kwargs):
         """ Delay the import of the records"""
+        assert record
         import_record.delay(
             self.session,
             '_import_stock_available',
             self.backend_record.id,
-            record,
+            record_id,
+            record=record,
             **kwargs
         )
 
 
 @prestashop
-class ProductInventoryImport(PrestashopImporter):
+class ProductInventoryImporter(PrestashopImporter):
     _model_name = ['_import_stock_available']
 
     def _get_quantity(self, record):
@@ -315,43 +360,70 @@ class ProductInventoryImport(PrestashopImporter):
             all_qty += int(quantity['quantity'])
         return all_qty
 
-    def _get_template(self, record):
+    def _get_binding(self):
+        record = self.prestashop_record
         if record['id_product_attribute'] == '0':
             binder = self.binder_for('prestashop.product.template')
-            return binder.to_odoo(record['id_product'], unwrap=True)
+            return binder.to_odoo(record['id_product'])
         binder = self.binder_for('prestashop.product.combination')
-        return binder.to_odoo(record['id_product_attribute'], unwrap=True)
+        return binder.to_odoo(record['id_product_attribute'])
 
-    def run(self, record):
+    def _import_dependencies(self):
+        """ Import the dependencies for the record"""
+        record = self.prestashop_record
         self._import_dependency(
-            record['id_product'], 'prestashop.product.template')
+            record['id_product'], 'prestashop.product.template'
+        )
         if record['id_product_attribute'] != '0':
             self._import_dependency(
                 record['id_product_attribute'],
-                'prestashop.product.combination')
+                'prestashop.product.combination'
+            )
 
+    def _check_in_new_connector_env(self):
+        # not needed in this importer
+        return
+
+    def run(self, prestashop_id, record=None, **kwargs):
+        assert record
+        self.prestashop_record = record
+        return super(ProductInventoryImporter, self).run(
+            prestashop_id, **kwargs
+        )
+
+    def _import(self, binding, **kwargs):
+        record = self.prestashop_record
         qty = self._get_quantity(record)
         if qty < 0:
             qty = 0
-        template = self._get_template(record)
+        if binding._name == 'prestashop.product.template':
+            products = binding.odoo_id.product_variant_ids
+        else:
+            products = binding.odoo_id
 
-        vals = {
-            'location_id': self.backend_record.warehouse_id.lot_stock_id.id,
-            'product_id': template.id,
-            'new_quantity': qty,
-        }
-        template_qty_id = self.session.env['stock.change.product.qty'].create(
-            vals)
-        template_qty_id.with_context(
-            active_id=template.id).change_product_qty()
+        location = (self.backend_record.stock_location_id or
+                    self.backend_record.warehouse_id.lot_stock_id)
+        for product in products:
+            vals = {
+                'location_id': location.id,
+                'product_id': product.id,
+                'new_quantity': qty,
+            }
+            template_qty = self.env['stock.change.product.qty'].create(vals)
+            template_qty.with_context(
+                active_id=product.id,
+                connector_no_export=True,
+            ).change_product_qty()
 
 
 @prestashop
-class TemplateRecordImport(TranslatableRecordImporter):
+class ProductTemplateImporter(TranslatableRecordImporter):
     """ Import one translatable record """
     _model_name = [
         'prestashop.product.template',
     ]
+
+    _base_mapper = TemplateMapper
 
     _translatable_fields = {
         'prestashop.product.template': [
@@ -362,29 +434,47 @@ class TemplateRecordImport(TranslatableRecordImporter):
             'meta_title',
             'meta_description',
             'meta_keywords',
+
         ],
     }
 
-    def _after_import(self, erp_id):
-        self.import_images(erp_id)
-        self.import_combinations()
-        self.attribute_line(erp_id)
-        self.deactivate_default_product(erp_id)
+    def __init__(self, environment):
+        """
+        :param environment: current environment (backend, session, ...)
+        :type environment: :py:class:`connector.connector.ConnectorEnvironment`
+        """
+        super(ProductTemplateImporter, self).__init__(environment)
+        self.default_category_error = False
 
-    def deactivate_default_product(self, erp_id):
-        template = erp_id
-        if template.product_variant_count != 1:
-            for product in template.product_variant_ids:
+    def _after_import(self, binding):
+        super(ProductTemplateImporter, self)._after_import(binding)
+        self.import_images(binding)
+        self.import_combinations()
+        self.attribute_line(binding)
+        self.deactivate_default_product(binding)
+        self.checkpoint_default_category_missing(binding)
+
+    def checkpoint_default_category_missing(self, binding):
+        if self.default_category_error:
+            msg = _('The default category could not be imported.')
+            self.backend_record.add_checkpoint(
+                model='product.template',
+                record_id=binding.odoo_id.id,
+                message=msg,
+            )
+
+    def deactivate_default_product(self, binding):
+        if binding.product_variant_count != 1:
+            for product in binding.product_variant_ids:
                 if not product.attribute_value_ids:
                     self.env['product.product'].browse(product.id).write(
                         {'active': False})
 
-    def attribute_line(self, erp_id):
-        template = erp_id
+    def attribute_line(self, binding):
         attr_line_value_ids = []
-        for attr_line in template.attribute_line_ids:
+        for attr_line in binding.attribute_line_ids:
             attr_line_value_ids.extend(attr_line.value_ids.ids)
-        template_id = template.odoo_id.id
+        template_id = binding.odoo_id.id
         products = self.env['product.product'].search([
             ('product_tmpl_id', '=', template_id)]
         )
@@ -405,12 +495,32 @@ class TemplateRecordImport(TranslatableRecordImporter):
                         'value_ids': [(6, 0, values.ids)],
                     })
 
+    def _import_combination(self, combination, **kwargs):
+        """ Import a combination
+
+        Can be overriden for instance to forward arguments to the importer
+        """
+        self._import_dependency(combination['id'],
+                                'prestashop.product.combination',
+                                always=True,
+                                **kwargs)
+
+    def _delay_product_image_variant(self, combinations, **kwargs):
+        set_product_image_variant.delay(
+            self.session,
+            'prestashop.product.combination',
+            self.backend_record.id,
+            combinations,
+            priority=15,
+            **kwargs
+        )
+
     def import_combinations(self):
         prestashop_record = self._get_prestashop_data()
         associations = prestashop_record.get('associations', {})
 
-        combinations = associations.get('combinations', {}).get(
-            'combinations', [])
+        ps_key = self.backend_record.get_version_ps_key('combinations')
+        combinations = associations.get('combinations', {}).get(ps_key, [])
 
         if not isinstance(combinations, list):
             combinations = [combinations]
@@ -420,24 +530,26 @@ class TemplateRecordImport(TranslatableRecordImporter):
                     'id': prestashop_record[
                         'id_default_combination']['value']}))
             if first_exec:
-                import_record(
-                    self.session, 'prestashop.product.combination',
-                    self.backend_record.id, first_exec['id'])
+                self._import_combination(first_exec)
 
             for combination in combinations:
-                import_record(
-                    self.session, 'prestashop.product.combination',
-                    self.backend_record.id, combination['id'])
-            if combinations and associations['images'].get('image', False):
-                set_product_image_variant.delay(
-                    self.session,
-                    'prestashop.product.combination',
-                    self.backend_record.id,
-                    combinations,
-                    priority=15,
-                )
+                self._import_combination(combination)
 
-    def import_images(self, erp_id):
+            if combinations and associations['images'].get('image'):
+                self._delay_product_image_variant(combinations)
+
+    def _delay_import_product_image(self, prestashop_record, image, **kwargs):
+        import_product_image.delay(
+            self.session,
+            'prestashop.product.image',
+            self.backend_record.id,
+            prestashop_record['id'],
+            image['id'],
+            priority=10,
+            **kwargs
+        )
+
+    def import_images(self, binding):
         prestashop_record = self._get_prestashop_data()
         associations = prestashop_record.get('associations', {})
         images = associations.get('images', {}).get(
@@ -446,16 +558,9 @@ class TemplateRecordImport(TranslatableRecordImporter):
             images = [images]
         for image in images:
             if image.get('id'):
-                import_product_image.delay(
-                    self.session,
-                    'prestashop.product.image',
-                    self.backend_record.id,
-                    prestashop_record['id'],
-                    image['id'],
-                    priority=10,
-                )
+                self._delay_import_product_image(prestashop_record, image)
 
-    def import_supplierinfo(self, erp_id):
+    def import_supplierinfo(self, binding):
         ps_id = self._get_prestashop_data()['id']
         filters = {
             'filter[id_product]': ps_id,
@@ -467,7 +572,7 @@ class TemplateRecordImport(TranslatableRecordImporter):
             self.backend_record.id,
             filters=filters
         )
-        ps_product_template = erp_id
+        ps_product_template = binding
         ps_supplierinfos = self.env['prestashop.product.supplierinfo'].\
             search([('product_tmpl_id', '=', ps_product_template.id)])
         for ps_supplierinfo in ps_supplierinfos:
@@ -493,7 +598,9 @@ class TemplateRecordImport(TranslatableRecordImporter):
                 self._import_dependency(record['id_category_default'],
                                         'prestashop.product.category')
             except PrestaShopWebServiceError:
-                pass
+                # a checkpoint will be added in _after_import (because
+                # we'll know the binding at this point)
+                self.default_category_error = True
 
     def _import_categories(self):
         record = self.prestashop_record
@@ -503,42 +610,46 @@ class TemplateRecordImport(TranslatableRecordImporter):
         if not isinstance(categories, list):
             categories = [categories]
         for category in categories:
-            self._import_dependency(
-                category['id'], 'prestashop.product.category')
-
-
-@prestashop
-class ProductTemplateBatchImporter(DelayedBatchImporter):
-    _model_name = 'prestashop.product.template'
+            self._import_dependency(category['id'],
+                                    'prestashop.product.category')
 
 
 @job(default_channel='root.prestashop')
 def import_inventory(session, backend_id):
-    env = get_environment(session, '_import_stock_available', backend_id)
-    inventory_importer = env.get_connector_unit(ProductInventoryBatchImport)
+    backend = session.env['prestashop.backend'].browse(backend_id)
+    env = backend.get_environment('_import_stock_available', session=session)
+    inventory_importer = env.get_connector_unit(ProductInventoryBatchImporter)
     return inventory_importer.run()
 
 
 @job(default_channel='root.prestashop')
-def import_products(session, backend_id, since_date):
+def import_products(
+        session, backend_id, since_date=None, **kwargs):
     filters = None
     if since_date:
         filters = {'date': '1', 'filter[date_upd]': '>[%s]' % (since_date)}
-    now_fmt = datetime.now().strftime(DEFAULT_SERVER_DATETIME_FORMAT)
+    now_fmt = fields.Datetime.now()
     import_batch(
         session,
         'prestashop.product.category',
         backend_id,
         filters,
-        priority=15
+        priority=15,
+        **kwargs
     )
     import_batch(
         session,
         'prestashop.product.template',
         backend_id,
         filters,
-        priority=15
+        priority=15,
+        **kwargs
     )
     session.env['prestashop.backend'].browse(backend_id).write({
         'import_products_since': now_fmt
     })
+
+
+@prestashop
+class ProductTemplateBatchImporter(DelayedBatchImporter):
+    _model_name = 'prestashop.product.template'

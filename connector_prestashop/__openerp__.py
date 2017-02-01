@@ -27,6 +27,7 @@
             # tests dependencies
             "freezegun",
             "vcr",
+            "bs4",
         ],
     },
     "author": "Akretion,"
@@ -47,11 +48,11 @@
         'views/product_category_view.xml',
         'views/image_view.xml',
         'views/delivery_view.xml',
+        'views/connector_prestashop_menu.xml',
         'views/partner_view.xml',
         'views/sale_view.xml',
         'views/account_view.xml',
         'views/stock_view.xml',
-        'views/connector_prestashop_menu.xml',
         'security/ir.model.access.csv',
         'security/prestashop_security.xml',
         'data/ecommerce_data.xml',

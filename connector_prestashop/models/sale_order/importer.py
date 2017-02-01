@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
 _logger = logging.getLogger(__name__)
+
 try:
     from prestapyt import PrestaShopWebServiceError
 except:
@@ -215,8 +216,12 @@ class SaleOrderMapper(ImportMapper):
 
     @mapping
     def pricelist_id(self, record):
-        # TODO: configure on the backend
-        return {'pricelist_id': 1}
+        return {'pricelist_id': self.backend_record.pricelist_id.id}
+
+    @mapping
+    def sale_team(self, record):
+        if self.backend_record.sale_team_id:
+            return {'team_id': self.backend_record.sale_team_id.id}
 
     @mapping
     def backend_id(self, record):
@@ -253,6 +258,14 @@ class SaleOrderMapper(ImportMapper):
 class SaleOrderImporter(PrestashopImporter):
     _model_name = ['prestashop.sale.order']
 
+    def __init__(self, environment):
+        """
+        :param environment: current environment (backend, session, ...)
+        :type environment: :py:class:`connector.connector.ConnectorEnvironment`
+        """
+        super(SaleOrderImporter, self).__init__(environment)
+        self.line_template_errors = []
+
     def _import_dependencies(self):
         record = self.prestashop_record
         self._import_dependency(
@@ -269,49 +282,50 @@ class SaleOrderImporter(PrestashopImporter):
             self._import_dependency(record['id_carrier'],
                                     'prestashop.delivery.carrier')
 
-        orders = record['associations'] \
+        rows = record['associations'] \
             .get('order_rows', {}) \
             .get(self.backend_record.get_version_ps_key('order_row'), [])
-        if isinstance(orders, dict):
-            orders = [orders]
-        for order in orders:
+        if isinstance(rows, dict):
+            rows = [rows]
+        for row in rows:
             try:
-                self._import_dependency(order['product_id'],
+                self._import_dependency(row['product_id'],
                                         'prestashop.product.template')
-            except PrestaShopWebServiceError:
-                # TODO check this silent error
-                pass
+            except PrestaShopWebServiceError as err:
+                # we ignore it, the order line will be imported without product
+                _logger.error('PrestaShop product %s could not be imported, '
+                              'error: %s', row['product_id'], err)
+                self.line_template_errors.push(row)
 
     def _add_shipping_line(self, binding):
         shipping_total = (binding.total_shipping_tax_included
                           if self.backend_record.taxes_included
                           else binding.total_shipping_tax_excluded)
-        if shipping_total:
-            sale_line_obj = self.session.env['sale.order.line']
-            sale_line_obj.create({
-                'order_id': binding.odoo_id.id,
-                'product_id': binding.odoo_id.carrier_id.product_id.id,
-                'price_unit': shipping_total,
-                'is_delivery': True
-            })
+        # when we have a carrier_id, even with a 0.0 price,
+        # Odoo will adda a shipping line in the SO when the picking
+        # is done, so we better add the line directly even when the
+        # price is 0.0
+        if binding.odoo_id.carrier_id:
+            binding.odoo_id._create_delivery_line(
+                binding.odoo_id.carrier_id,
+                shipping_total
+            )
         binding.odoo_id.recompute()
 
     def _after_import(self, binding):
         super(SaleOrderImporter, self)._after_import(binding)
         self._add_shipping_line(binding)
+        self.checkpoint_line_without_template(binding)
 
-    # TODO: this method is unreachable
-    def _check_refunds(self, id_customer, id_order):
-        backend_adapter = self.unit_for(
-            GenericAdapter, 'prestashop.refund'
+    def checkpoint_line_without_template(self, binding):
+        if not self.line_template_errors:
+            return
+        msg = _('Product(s) used in the sales order could not be imported.')
+        self.backend_record.add_checkpoint(
+            model='sale.order',
+            record_id=binding.odoo_id.id,
+            message=msg,
         )
-        filters = {'filter[id_customer]': id_customer}
-        refund_ids = backend_adapter.search(filters=filters)
-        for refund_id in refund_ids:
-            refund = backend_adapter.read(refund_id)
-            if refund['id_order'] == id_order:
-                continue
-            self._import_dependency(refund_id, 'prestashop.refund')
 
     def _has_to_skip(self):
         """ Return True if the import can be skipped """
@@ -347,21 +361,6 @@ class SaleOrderLineMapper(ImportMapper):
     def prestashop_id(self, record):
         return {'prestashop_id': record['id']}
 
-    # TODO: who is using this???
-    def none_product(self, record):
-        product_id = True
-        if 'product_attribute_id' not in record:
-            binder = self.binder_for('prestashop.product.template')
-            template = binder.to_odoo(
-                record['product_id'],
-                unwrap=True,
-            )
-            product_id = self.env['product.product'].search([
-                ('product_tmpl_id', '=', template.id),
-                ('company_id', '=', self.backend_record.company_id.id)]
-            )
-        return not product_id
-
     @mapping
     def price_unit(self, record):
         if self.backend_record.taxes_included:
@@ -394,9 +393,8 @@ class SaleOrderLineMapper(ImportMapper):
                 ('company_id', '=', self.backend_record.company_id.id)],
                 limit=1,
             )
-            if not product:
-                # TODO: what's this?
-                return self.tax_id(record)
+        if not product:
+            return {}
         return {
             'product_id': product.id,
             'product_uom': product and product.uom_id.id,
@@ -471,7 +469,7 @@ class SaleOrderLineDiscountMapper(ImportMapper):
 
 
 @job(default_channel='root.prestashop')
-def import_orders_since(session, backend_id, since_date=None):
+def import_orders_since(session, backend_id, since_date=None, **kwargs):
     """ Prepare the import of orders modified on PrestaShop """
     backend_record = session.env['prestashop.backend'].browse(backend_id)
     filters = None
@@ -483,7 +481,8 @@ def import_orders_since(session, backend_id, since_date=None):
         backend_id,
         filters,
         priority=10,
-        max_retries=0
+        max_retries=0,
+        **kwargs
     )
     if since_date:
         filters = {'date': '1', 'filter[date_add]': '>[%s]' % since_date}

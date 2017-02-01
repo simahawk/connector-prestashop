@@ -5,11 +5,12 @@ import logging
 
 from openerp import models, fields, api, exceptions, _
 
+from openerp.addons.connector.connector import ConnectorEnvironment
 from openerp.addons.connector.session import ConnectorSession
 from ...unit.importer import import_batch, import_record
 from ...unit.auto_matching_importer import AutoMatchingImporter
-from ...connector import get_environment
 from ...unit.backend_adapter import GenericAdapter, api_handle_errors
+from ...unit.version_key import VersionKey
 from ...backend import prestashop
 
 from ..product_template.exporter import export_product_quantities
@@ -40,7 +41,8 @@ class PrestashopBackend(models.Model):
         return [
             ('1.5', '< 1.6.0.9'),
             ('1.6.0.9', '1.6.0.9 - 1.6.0.10'),
-            ('1.6.0.11', '>= 1.6.0.11'),
+            ('1.6.0.11', '>= 1.6.0.11 - <1.6.1.2'),
+            ('1.6.1.2', '=1.6.1.2')
         ]
     version = fields.Selection(
         selection='_select_versions',
@@ -59,6 +61,29 @@ class PrestashopBackend(models.Model):
         required=True,
         help='Warehouse used to compute the stock quantities.'
     )
+    stock_location_id = fields.Many2one(
+        comodel_name='stock.location',
+        string='Stock Location',
+        help='Location used to import stock quantities.'
+    )
+    pricelist_id = fields.Many2one(
+        comodel_name='product.pricelist',
+        string='Pricelist',
+        required=True,
+        default=lambda self: self._default_pricelist_id(),
+        help="Pricelist used in sales orders",
+    )
+    sale_team_id = fields.Many2one(
+        comodel_name='crm.team',
+        string='Sales Team',
+        help="Sales Team assigned to the imported sales orders.",
+    )
+
+    refund_journal_id = fields.Many2one(
+        comodel_name='account.journal',
+        string='Refund Journal',
+    )
+
     taxes_included = fields.Boolean("Use tax included prices")
     import_partners_since = fields.Datetime('Import partners since')
     import_orders_since = fields.Datetime('Import Orders since')
@@ -91,6 +116,17 @@ class PrestashopBackend(models.Model):
         string='Shipping Product',
     )
 
+    @api.model
+    def _default_pricelist_id(self):
+        return self.env['product.pricelist'].search([], limit=1)
+
+    @api.multi
+    def get_environment(self, model_name, session=None):
+        self.ensure_one()
+        if not session:
+            session = ConnectorSession.from_env(self.env)
+        return ConnectorEnvironment(self, session, model_name)
+
     @api.multi
     def synchronize_metadata(self):
         session = ConnectorSession.from_env(self.env)
@@ -115,7 +151,7 @@ class PrestashopBackend(models.Model):
                 'prestashop.res.currency',
                 'prestashop.account.tax',
             ]:
-                env = get_environment(session, model_name, backend.id)
+                env = backend.get_environment(model_name, session=session)
                 importer = env.get_connector_unit(AutoMatchingImporter)
                 importer.run()
 
@@ -126,8 +162,7 @@ class PrestashopBackend(models.Model):
     @api.multi
     def _check_connection(self):
         self.ensure_one()
-        session = ConnectorSession.from_env(self.env)
-        env = get_environment(session, self._name, self.id)
+        env = self.get_environment(self._name)
         adapter = env.get_connector_unit(GenericAdapter)
         with api_handle_errors('Connection failed'):
             adapter.head()
@@ -141,8 +176,6 @@ class PrestashopBackend(models.Model):
     def import_customers_since(self):
         session = ConnectorSession.from_env(self.env)
         for backend_record in self:
-            # TODO: why is it converted as user TZ?? shouldn't
-            # odoo and prestashop both be UTC with ntp ?
             since_date = backend_record.import_partners_since
             import_customers_since.delay(
                 session,
@@ -222,23 +255,10 @@ class PrestashopBackend(models.Model):
         return True
 
     def get_version_ps_key(self, key):
-        keys_conversion = {
-            '1.6.0.9': {
-                'product_option_value': 'product_option_values',
-                'category': 'categories',
-                'order_slip': 'order_slips',
-                'order_slip_detail': 'order_slip_details',
-                'group': 'groups',
-                'order_row': 'order_rows',
-                'tax': 'taxes',
-                'image': 'images',
-            },
-            # singular names as < 1.6.0.9
-            '1.6.0.11': {},
-        }
-        if self.version == '1.6.0.9':
-            key = keys_conversion[self.version][key]
-        return key
+        self.ensure_one()
+        env = self.get_environment('_prestashop.version.key')
+        keys = env.get_connector_unit(VersionKey)
+        return keys.get_key(key)
 
     @api.model
     def _scheduler_update_product_stock_qty(self, domain=None):
@@ -273,7 +293,7 @@ class PrestashopBackend(models.Model):
     @api.multi
     def import_record(self, model_name, ext_id):
         self.ensure_one()
-        session = ConnectorSession()
+        session = ConnectorSession.from_env(self.env)
         import_record(session, model_name, self.id, ext_id)
         return True
 

@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
-from openerp import _
+from openerp.tools.translate import _
 from openerp.addons.connector.queue.job import job
 from openerp.addons.connector.unit.synchronizer import Deleter
-from ..connector import get_environment
 
 
 class PrestashopDeleter(Deleter):
@@ -24,6 +23,7 @@ class PrestashopDeleter(Deleter):
 def export_delete_record(
         session, model_name, backend_id, external_id, resource):
     """ Delete a record on PrestaShop """
-    env = get_environment(session, model_name, backend_id)
+    backend = session.env['prestashop.backend'].browse(backend_id)
+    env = backend.get_environment(model_name, session=session)
     deleter = env.get_connector_unit(PrestashopDeleter)
     return deleter.run(resource, external_id)

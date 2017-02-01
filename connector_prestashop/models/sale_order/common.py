@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
-import logging
-
 import openerp.addons.decimal_precision as dp
 
 from openerp import models, fields, api
@@ -12,10 +10,6 @@ from ...backend import prestashop
 
 import logging
 _logger = logging.getLogger(__name__)
-try:
-    from prestapyt import PrestaShopWebServiceDict
-except:
-    _logger.debug('Cannot import from `prestapyt`')
 
 
 class SaleOrder(models.Model):
@@ -155,23 +149,6 @@ class SaleOrderAdapter(GenericAdapter):
 
     def update_sale_state(self, prestashop_id, datas):
         return self.client.add('order_histories', datas)
-
-    def search(self, filters=None):
-        result = super(SaleOrderAdapter, self).search(filters=filters)
-
-        # TODO: see why we have to interact with Odoo here, should not be
-        # tne responsibility of the adapter
-        shops = self.env['prestashop.shop'].search([
-            ('backend_id', '=', self.backend_record.id)
-        ])
-        for shop in shops:
-            if not shop.default_url:
-                continue
-            api = PrestaShopWebServiceDict(
-                '%s/api' % shop.default_url, self.prestashop.webservice_key
-            )
-            result += api.search(self._prestashop_model, filters)
-        return result
 
 
 @prestashop

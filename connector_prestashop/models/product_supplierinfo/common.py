@@ -1,14 +1,7 @@
 # -*- coding: utf-8 -*-
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
-from openerp import fields, models
-
-from ...backend import prestashop
-from ...unit.backend_adapter import (
-    PrestaShopCRUDAdapter,
-    PrestaShopWebServiceImage,
-    GenericAdapter
-)
+from openerp import models, fields
 
 from ...unit.backend_adapter import (
     PrestaShopCRUDAdapter,

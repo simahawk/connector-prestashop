@@ -2,19 +2,17 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html)
 
 from openerp import api, fields, models
+from openerp.addons.decimal_precision import decimal_precision as dp
 
 from ...unit.backend_adapter import GenericAdapter
 from ...backend import prestashop
 
-try:
-    from xml.etree import cElementTree as ElementTree
-except ImportError, e:
-    from xml.etree import ElementTree
-
 import logging
+
 _logger = logging.getLogger(__name__)
+
 try:
-    from prestapyt import PrestaShopWebServiceError, PrestaShopWebServiceDict
+    from prestapyt import PrestaShopWebServiceDict
 except:
     _logger.debug('Cannot import from `prestapyt`')
 
@@ -27,6 +25,11 @@ class ProductTemplate(models.Model):
         inverse_name='odoo_id',
         copy=False,
         string='PrestaShop Bindings',
+    )
+    prestashop_default_category_id = fields.Many2one(
+        comodel_name='product.category',
+        string='PrestaShop Default Category',
+        ondelete='restrict'
     )
 
     @api.multi
@@ -101,6 +104,10 @@ class PrestashopProductTemplate(models.Model):
     )
     reference = fields.Char(string='Original reference')
     on_sale = fields.Boolean(string='Show on sale icon')
+    wholesale_price = fields.Float(
+        string='Cost Price',
+        digits_compute=dp.get_precision('Product Price'),
+    )
 
     @api.multi
     def recompute_prestashop_qty(self):
@@ -153,12 +160,23 @@ class ProductInventoryAdapter(GenericAdapter):
             first_key = res.keys()[0]
             stock = res[first_key]
             stock['quantity'] = int(quantity)
-            try:
-                client.edit(self._prestashop_model, {
-                    self._export_node_name: stock
-                })
-            # TODO: investigate the silent errors
-            except PrestaShopWebServiceError:
-                pass
-            except ElementTree.ParseError:
-                pass
+            client.edit(self._prestashop_model, {
+                self._export_node_name: stock
+            })
+
+
+@prestashop
+class PrestashopProductTags(GenericAdapter):
+    _model_name = '_prestashop_product_tag'
+    _prestashop_model = 'tags'
+    _export_node_name = 'tag'
+
+    def search(self, filters=None):
+        res = self.client.get(self._prestashop_model, options=filters)
+        tags = res[self._prestashop_model]
+        if not tags:
+            return []
+        tags = tags[self._export_node_name]
+        if isinstance(tags, dict):
+            return [tags]
+        return tags
