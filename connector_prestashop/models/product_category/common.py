@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
-from openerp import models, fields
+import logging
+from openerp import fields, models
+
+from ...backend import prestashop
+from ...unit.backend_adapter import GenericAdapter
+
+_logger = logging.getLogger(__name__)
 
 from ...unit.backend_adapter import GenericAdapter
 
