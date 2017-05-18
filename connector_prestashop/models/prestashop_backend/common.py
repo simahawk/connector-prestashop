@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 import logging
+import json
 
 from openerp import models, fields, api, exceptions, _
 
@@ -115,10 +116,40 @@ class PrestashopBackend(models.Model):
         required=True,
         string='Shipping Product',
     )
+    default_extra_attributes = fields.Text(
+        string='Default extra attributes (JSON)',
+        help=('Enforce attributes via JSON. '
+              'You can customize and override parameters on the fly here. '
+              'They will be inject on `mapper.finalize`. '
+              'The main key must be a model name. Eg: '
+              '{"product.template": {"foo": "baz"}}'),
+    )
 
     @api.model
     def _default_pricelist_id(self):
         return self.env['product.pricelist'].search([], limit=1)
+
+    @api.onchange('default_extra_attributes')
+    @api.constrains('default_extra_attributes')
+    def _onchange_default_extra_attributes(self):
+        # validate JSON
+        if self.default_extra_attributes:
+            try:
+                json.loads(self.default_extra_attributes)
+            except ValueError:
+                raise exceptions.ValidationError(_(
+                    '`default_extra_attributes` JSON format is invalid!'
+                ))
+
+    def get_extra_attributes(self, main_key=None):
+        """Safely return extra attributes."""
+        try:
+            value = json.loads(self.default_extra_attributes)
+            if main_key:
+                return value.get(main_key, {})
+            return value
+        except ValueError:
+            return {}
 
     @api.multi
     def get_environment(self, model_name, session=None):

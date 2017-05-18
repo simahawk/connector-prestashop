@@ -19,6 +19,18 @@ class PrestashopExportMapper(ExportMapper):
                 res = str(res)
         return res
 
+    def finalize(self, record, values):
+        _super = super(PrestashopExportMapper, self)
+        res = _super.finalize(record, values)
+        extras = self.get_extra_attributes(record)
+        if extras:
+            res.update(extras)
+        return res
+
+    def get_extra_attributes(self, record):
+        return self.backend_record.get_extra_attributes(
+            main_key=self.model._name)
+
 
 class TranslationPrestashopExportMapper(PrestashopExportMapper):
 
