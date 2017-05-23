@@ -204,11 +204,15 @@ class PrestashopBackend(models.Model):
             import_carriers.delay(session, backend_record.id, priority=10)
         return True
 
+    PRODUCT_EXPORT_CHUNK_SIZE = 500
+
     @api.multi
     def update_product_stock_qty(self):
         session = ConnectorSession.from_env(self.env)
         for backend_record in self:
-            export_product_quantities.delay(session, backend_record.id)
+            export_product_quantities.delay(
+                session, backend_record.id,
+                chunksize=self.PRODUCT_EXPORT_CHUNK_SIZE)
         return True
 
     @api.multi

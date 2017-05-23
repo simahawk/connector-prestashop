@@ -7,6 +7,7 @@ from openerp.addons.connector.unit.synchronizer import Exporter
 
 from ...unit.backend_adapter import GenericAdapter
 from ...backend import prestashop
+from ...utils import chunkify
 
 
 @prestashop
@@ -40,9 +41,18 @@ def export_inventory(session, model_name, record_id, fields=None, **kwargs):
 
 
 @job(default_channel='root.prestashop')
-def export_product_quantities(session, ids):
+def export_product_quantities_chunked(session, model_name, chunked_ids):
+    model_obj = session.env[model_name]
+    model_obj.browse(chunked_ids).recompute_prestashop_qty()
+
+
+@job(default_channel='root.prestashop')
+def export_product_quantities(session, ids, chunksize=500):
     for model in ['template', 'combination']:
         model_obj = session.env['prestashop.product.' + model]
-        model_obj.search([
+        pids = model_obj.search([
             ('backend_id', 'in', [ids]),
-        ]).recompute_prestashop_qty()
+        ]).ids
+        for chunk in chunkify(pids, chunksize=chunksize):
+            export_product_quantities_chunked.delay(
+                session, model_obj._name, chunk)
