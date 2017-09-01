@@ -95,6 +95,12 @@ class PrestashopBackend(models.Model):
         inverse_name='backend_id',
         string='Languages',
     )
+    default_language_id = fields.Many2one(
+        comodel_name='prestashop.res.lang',
+        required=True,
+        domain=[('active', '=', True)],
+        string='Default language',
+    )
     company_id = fields.Many2one(
         comodel_name='res.company',
         index=True,
