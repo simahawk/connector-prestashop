@@ -15,6 +15,7 @@ from openerp.addons.connector_prestashop.unit.exporter import (
 from openerp.addons.connector_prestashop.unit.mapper import (
     TranslationPrestashopExportMapper,
 )
+from openerp.addons.connector.unit.backend_adapter import BackendAdapter
 from openerp.addons.connector_prestashop.backend import prestashop
 from ...consumer import get_slug
 
@@ -33,8 +34,50 @@ class ProductTemplateExporter(TranslationPrestashopExporter):
         assert self.prestashop_id
         self.export_variants()
         self.check_images()
+        self.fix_missing_values(data)
         self.backend_adapter.write(self.prestashop_id, data)
 
+    def fix_missing_values(self, values):
+        """Fix missing values.
+
+        As of 2017-09-01 we have a big issue: translations for some fields
+        are not imported properly. So, when we export them back override
+        PS values w/ wrong values because we could have in Odoo:
+
+            description = {'language': [
+                {'attrs': {'id': '1'},
+                 'value': '<p>French description</p>'},
+                {'attrs': {'id': '2'}, 'value': '<p>French description</p>'}
+            ]}
+
+        which is wrong, and in PS:
+
+            description = {'language': [
+                {'attrs': {'id': '1'},
+                 'value': '<p>French description</p>'},
+                {'attrs': {'id': '2'}, 'value': '<p>German description</p>'}
+            ]}
+
+        which is correct. Excluding the fields from the export is a no go
+        because PS wipes fields values that are not passed explicitly
+        in full write. Furthermore, we cannot use partial edit because
+        ATM the connector does not use it at all.
+
+        Finally, to work around this we just fetch these values from PS
+        before exporting them.
+        """
+        fields = (
+            'description_short',
+            'description',
+        )
+        backend_adapter = self.unit_for(
+            BackendAdapter, 'prestashop.product.template')
+        ps_vals = backend_adapter.read(self.prestashop_id)
+        for fname in fields:
+            if ps_vals.get(fname):
+                values[fname] = ps_vals[fname]
+
+    # TODO: is this needed at all?
     def write_binging_vals(self, erp_record, ps_record):
         keys_to_update = [
             ('description_short_html', 'description_short'),

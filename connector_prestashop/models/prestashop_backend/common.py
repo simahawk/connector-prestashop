@@ -97,7 +97,6 @@ class PrestashopBackend(models.Model):
     )
     default_language_id = fields.Many2one(
         comodel_name='prestashop.res.lang',
-        required=True,
         domain=[('active', '=', True)],
         string='Default language',
     )

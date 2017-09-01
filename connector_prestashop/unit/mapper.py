@@ -4,6 +4,8 @@
 from openerp.addons.connector.unit.mapper import ExportMapper
 from openerp.addons.connector.unit.mapper import mapping
 
+import lxml.html
+
 
 class PrestashopExportMapper(ExportMapper):
 
@@ -44,14 +46,39 @@ class TranslationPrestashopExportMapper(PrestashopExportMapper):
             records[language['prestashop_id']] = record
         return records
 
+    @property
+    def export_disabled_empty_value_fields(self):
+        fields = getattr(self, '_translatable_fields', [])
+        # by default, all of them
+        return [x[1] for x in fields]
+
+    def _text_value(self, from_attr, to_attr, value):
+        # this works fine even w/ plain text stringss
+        txt = lxml.html.fromstring(value).text
+        return txt.strip() if txt else ''
+
+    def _is_valid_value(self, from_attr, to_attr, value):
+        value_ok = bool(value)
+        if value and isinstance(value, basestring):
+            value_ok = bool(self._text_value(from_attr, to_attr, value))
+        if to_attr in self.export_disabled_empty_value_fields and not value_ok:
+            return False
+        return True
+
     def _convert_languages(self, records_by_language, translatable_fields):
         res = {}
         for from_attr, to_attr in translatable_fields:
             value = {'language': []}
+            has_values = False
             for language_id, record in records_by_language.iteritems():
+                _value = record[from_attr] or ''
+                if not self._is_valid_value(from_attr, to_attr, _value):
+                    continue
                 value['language'].append({
                     'attrs': {'id': str(language_id)},
-                    'value': record[from_attr] or ''
+                    'value': _value
                 })
-            res[to_attr] = value
-        return res
+                has_values = True
+            if has_values:
+                res[to_attr] = value
+        return res    
